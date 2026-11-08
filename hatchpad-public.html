@@ -524,7 +524,7 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
           <div class="page-head">
             <h2>Launch an animal coin</h2>
             <p class="quote-line">Every day, thousands of animal coins launch and get vamped. On Hatchpad, an animal coin can only be launched once.</p>
-            <p style="margin-top:8px;">The launch deploys on pump.fun through PumpPortal and is signed by your wallet. The coin image and metadata are stored permanently on Arweave first — signed by your wallet, with a one-off storage deposit of about 0.0001 SOL only if your wallet has no storage balance yet. It is only marked launched once a real mint and transaction exist on-chain.</p>
+            <p style="margin-top:8px;">The launch deploys on pump.fun through PumpPortal and is signed by your wallet. The coin image and metadata are stored permanently on Arweave first — signed by your wallet with a message signature, free of charge (no storage deposit) for normal coin images. It is only marked launched once a real mint and transaction exist on-chain.</p>
           </div>
           <div class="card" style="padding:26px; margin-top:22px;">
             <form id="launch-form" novalidate>
@@ -608,7 +608,7 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
               <div id="launch-wallet-note" style="margin:6px 0 14px;"></div>
               <button type="submit" class="btn-pistachio big-action" id="launch-submit">Launch on pump.fun</button>
               <div class="status-line" id="launch-status"></div>
-              <p class="note" id="launch-build-stamp" style="margin-top:8px; opacity:0.75;">Build v8 · 2026-11-08 · 13:38 IST — if a launch fails, this stamp is in the error so we can tell exactly which file you are running.</p>
+              <p class="note" id="launch-build-stamp" style="margin-top:8px; opacity:0.75;">Build v9 · 2026-11-08 · free Irys uploader — if a launch fails, this stamp is in the error so we can tell exactly which file you are running.</p>
             </form>
           </div>
           <div id="my-launches"></div>
@@ -654,7 +654,7 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
               <button type="button" data-nav="social">Social</button>
             </nav>
           </div>
-          <p class="footer-fine" id="build-stamp">Build v8 · 2026-11-08 · 13:38 IST</p>
+          <p class="footer-fine" id="build-stamp">Build v9 · 2026-11-08 · free Irys uploader</p>
           <p class="footer-fine">Live market data from DexScreener and GeckoTerminal. Trades route through Jupiter — pump.fun curve coins included — with PumpPortal as the backup builder for bonding coins; launches deploy on pump.fun. Nothing on this page moves without your wallet signature. This static build keeps launches, callouts, follows and alerts in this browser session only — the global ticker registry lives on the full Hatchpad backend.</p>
         </div>
       </div>
@@ -681,8 +681,8 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
     /* Build stamp — shown in the footer, under the Launch button, and at
        the end of every launch error, so a screenshot alone proves which
        deployed file produced it. Bump the version on every fix. */
-    var BUILD_ID = "v8";
-    var BUILD_STAMP = "Build " + BUILD_ID + " · 2026-11-08 · 13:38 IST";
+    var BUILD_ID = "v9";
+    var BUILD_STAMP = "Build " + BUILD_ID + " · 2026-11-08 · free Irys uploader";
 
     /* ——— The 45 curated animal coins (verified live against DexScreener, 2026-11-07) ——— */
     var REGISTRY = [
@@ -2163,10 +2163,22 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
        deposit-credit wait below, never before it — and a send that
        still reports a stale blockhash is rebuilt once around a fresh
        one instead of failing the launch. */
-    var IRYS_NODE = "https://node1.irys.xyz";
-    var IRYS_NODES = ["https://node1.irys.xyz", "https://node2.irys.xyz"];
-    var IRYS_NODE_SOL_FALLBACK = "5z2wM2R5QQ3qbg2Wtt8zX77BPrRsDaZueb1kLdidzKZE";
+    /* v9: uploads go to Irys's current uploader, not the legacy
+       node1/node2 bundlers. Live-checked 2026-11-08: uploader.irys.xyz
+       accepts signed type-4 items up to ~100 KiB from a wallet with a
+       ZERO storage balance (HTTP 200) — no SOL deposit at all — while
+       node1/node2 charge ~100,500 lamports per item and answer 402
+       until a deposit is credited. The uploader's post route is
+       /tx/solana (plain /tx is 404 there). Items are served from
+       gateway.irys.xyz/<id>. The coin image is compressed below the
+       free size (see prepareArweaveImage), so a normal launch never
+       needs a deposit; the funded path below remains only for an
+       oversized item. */
+    var IRYS_NODE = "https://uploader.irys.xyz";
+    var IRYS_NODES = ["https://uploader.irys.xyz"];
+    var IRYS_NODE_SOL_FALLBACK = "9NERQjLetzquGwdKt3X4gZ8fE8fPfSkj2xo2esmUjWsz";
     var IRYS_GATEWAY = "https://gateway.irys.xyz";
+    var IRYS_FREE_MAX_BYTES = 100000; // signed item size the uploader stores free (limit sits just above this)
     var irysNodeSol = null;
     /* The most recent storage deposit sent during this page session, if
        any. A sent deposit is never re-sent blindly: the funding step
@@ -2393,6 +2405,13 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
             return state.provider.signTransaction(tx);
           }).then(function (signed) { return sendRawTx(signed.serialize()); })
             .then(function (sig) { return awaitConfirmation(sig).then(function () { return sig; }); })
+            .then(function (sig) {
+              // Register the deposit with the node — the step the official
+              // Irys SDK performs after every fund transfer. Without it the
+              // node never credits the transfer and uploads keep getting
+              // HTTP 402 "Not enough balance". Never fails the deposit.
+              return irysRegisterDeposit(IRYS_NODE, sig, step).then(function () { return sig; });
+            })
             .catch(function (e) {
               if (!retried && /blockhash/i.test((e && e.message) || "")) {
                 step("The deposit's blockhash expired while it was being signed — rebuilt with a fresh one, please approve once more…");
@@ -2403,6 +2422,28 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
         }
         return attempt(false);
       });
+    }
+    /* POST {tx_id} to /account/balance/solana so the node credits the
+       transfer. The node answers 400 "Confirmed tx not found" until its
+       own RPC sees the confirmed transaction, so it is retried for up
+       to ~60s. A failure here is not fatal: the credit wait that follows
+       still polls the balance. */
+    function irysRegisterDeposit(node, sig, step) {
+      var tries = 0;
+      function attempt() {
+        tries++;
+        return fetchTimeout(node + "/account/balance/solana", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tx_id: sig })
+        }, 15000).then(function (res) {
+          return res.text().then(function (txt) { return { ok: res.ok, txt: txt || "" }; });
+        }, function (e) { return { ok: false, txt: (e && e.message) || "" }; }).then(function (r) {
+          if (r.ok) { step("Storage deposit registered with " + node.replace("https://", "") + "."); return true; }
+          if (tries >= 20) return false;
+          step("Registering the storage deposit with " + node.replace("https://", "") + "… (attempt " + tries + ")");
+          return waitMs(3000).then(attempt);
+        });
+      }
+      return attempt();
     }
     function irysPrice(totalBytes, node) {
       return irysGetText((node || IRYS_NODE) + "/price/solana/" + totalBytes).then(function (r) {
@@ -2500,7 +2541,7 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
     }
     function irysPostItem(item, node, rec) {
       node = node || IRYS_NODE;
-      return fetchTimeout(node + "/tx", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: item.bytes }, 30000).then(function (res) {
+      return fetchTimeout(node + "/tx/solana", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: item.bytes }, 30000).then(function (res) {
         return res.text().then(function (txt) {
           if (rec) rec.posts.push({ status: res.status, balanceAfter: null, priceAfter: null });
           if (!res.ok) {
@@ -2533,6 +2574,27 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
        never store or charge it twice. */
     function irysPostFunded(item, step, label, headroom) {
       var rec = irysDiagUpload(label);
+      /* Free route first: the uploader stores small items with no
+         balance at all, so a normal-size image or metadata item is
+         posted straight away — no price check, no deposit, no wallet
+         transfer. Only a 402 (an item above the free size) falls
+         through to the funded flow below. */
+      var tryFree = item.bytes.length <= IRYS_FREE_MAX_BYTES
+        ? (function () {
+            rec.node = IRYS_NODE; rec.bytes = item.bytes.length;
+            step("Storing the coin " + label + " on Arweave via " + IRYS_NODE.replace("https://", "") + " (free — no deposit needed)…");
+            return irysPostItem(item, IRYS_NODE, rec).then(function (url) { return { url: url }; }, function (e) {
+              if (/402|not enough balance/i.test((e && e.message) || "")) return null;
+              throw e;
+            });
+          })()
+        : Promise.resolve(null);
+      return tryFree.then(function (free) {
+        if (free) return free.url;
+        return irysPostFundedPaid(item, step, label, headroom, rec);
+      });
+    }
+    function irysPostFundedPaid(item, step, label, headroom, rec) {
       step("Checking your storage balance for the " + label + " upload…");
       return irysEnsureFunded(item.bytes.length, step, headroom || 0, rec).then(function () {
         var node = rec.node || IRYS_NODE;
@@ -2559,20 +2621,35 @@ var g=[],w=[],S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+
         try { url = URL.createObjectURL(blob); } catch (e) { resolve(null); return; }
         var img = new Image();
         img.onload = function () {
-          try {
-            var max = 512;
-            var scale = Math.min(1, max / Math.max(img.width || 1, img.height || 1));
-            var canvas = document.createElement("canvas");
-            canvas.width = Math.max(1, Math.round((img.width || 1) * scale));
-            canvas.height = Math.max(1, Math.round((img.height || 1) * scale));
-            var ctx = canvas.getContext("2d");
-            ctx.fillStyle = "#0C4C30";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            URL.revokeObjectURL(url);
-            if (canvas.toBlob) canvas.toBlob(function (b) { resolve(b ? { blob: b, type: "image/jpeg" } : null); }, "image/jpeg", 0.87);
-            else resolve(null);
-          } catch (e) { try { URL.revokeObjectURL(url); } catch (e2) {} resolve(null); }
+          /* Re-encode until the JPEG fits the uploader's free size
+             (IRYS_FREE_MAX_BYTES minus room for the signed item's
+             header and tags), stepping quality down first and then
+             the dimensions. A 512px JPEG is usually 30–70 KB, so the
+             first pass almost always fits. */
+          var limit = IRYS_FREE_MAX_BYTES - 5000;
+          var passes = [[512, 0.87], [512, 0.75], [512, 0.6], [384, 0.75], [384, 0.6], [256, 0.7], [256, 0.5]];
+          var smallest = null;
+          function encode(i) {
+            if (i >= passes.length) { try { URL.revokeObjectURL(url); } catch (e) {} resolve(smallest); return; }
+            try {
+              var max = passes[i][0];
+              var scale = Math.min(1, max / Math.max(img.width || 1, img.height || 1));
+              var canvas = document.createElement("canvas");
+              canvas.width = Math.max(1, Math.round((img.width || 1) * scale));
+              canvas.height = Math.max(1, Math.round((img.height || 1) * scale));
+              var ctx = canvas.getContext("2d");
+              ctx.fillStyle = "#0C4C30";
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              if (!canvas.toBlob) { try { URL.revokeObjectURL(url); } catch (e) {} resolve(null); return; }
+              canvas.toBlob(function (b) {
+                if (b && (!smallest || b.size < smallest.blob.size)) smallest = { blob: b, type: "image/jpeg" };
+                if (b && b.size <= limit) { try { URL.revokeObjectURL(url); } catch (e) {} resolve({ blob: b, type: "image/jpeg" }); return; }
+                encode(i + 1);
+              }, "image/jpeg", passes[i][1]);
+            } catch (e) { try { URL.revokeObjectURL(url); } catch (e2) {} resolve(smallest); }
+          }
+          encode(0);
         };
         img.onerror = function () { try { URL.revokeObjectURL(url); } catch (e) {} resolve(null); };
         img.src = url;
